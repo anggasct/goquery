@@ -13,6 +13,8 @@ type Options struct {
 	FieldToCol  map[string]string
 	DefaultSort string
 	Dialect     *goquery.Dialect // nil = auto-detect from db connection
+	ExtraWhere  []string         // additional WHERE conditions prepended before goquery filters
+	ExtraArgs   []any            // args for ExtraWhere placeholders
 }
 
 type Clauses struct {
@@ -40,16 +42,36 @@ func Build(spec goquery.Spec, opts Options) Clauses {
 		FieldToCol: opts.FieldToCol,
 	}
 
-	where := b.WhereClauses(spec, 0)
+	var whereParts []string
+	var allArgs []any
+
+	// Prepend extra WHERE conditions
+	if len(opts.ExtraWhere) > 0 {
+		whereParts = append(whereParts, opts.ExtraWhere...)
+		allArgs = append(allArgs, opts.ExtraArgs...)
+	}
+
+	// Goquery clauses (search + filters) with arg offset
+	where := b.WhereClauses(spec, len(allArgs))
+	if where.SQL != "" {
+		whereParts = append(whereParts, where.SQL)
+		allArgs = append(allArgs, where.Args...)
+	}
+
+	whereSQL := ""
+	if len(whereParts) > 0 {
+		whereSQL = strings.Join(whereParts, " AND ")
+	}
+
 	orderBy := b.SortSQL(spec, opts.DefaultSort)
 	limit, offset := b.PageLimitOffset(spec)
 
 	return Clauses{
-		Where:   where.SQL,
+		Where:   whereSQL,
 		OrderBy: orderBy,
 		Limit:   limit,
 		Offset:  offset,
-		Args:    where.Args,
+		Args:    allArgs,
 	}
 }
 
