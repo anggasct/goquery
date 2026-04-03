@@ -1,15 +1,16 @@
 # goquery
 
-A Go library for building dynamic database queries with filtering, searching, sorting, and pagination. Supports multiple ORMs (sqlx, GORM, Bun) and database dialects (PostgreSQL, MySQL).
+A Go library for building dynamic database queries with filtering, searching, sorting, pagination, and relation loading. Supports multiple ORMs (sqlx, GORM, Bun) and database dialects (PostgreSQL, MySQL).
 
 ## Features
 
 - Parse URL query parameters into a structured query specification
-- Config-driven validation — define allowed filters, sort fields, and search fields per endpoint
+- Config-driven validation — define allowed filters, sort fields, search fields, and includes per endpoint
 - Support for multiple filter operators: `eq`, `in`, `like`, `gt`, `gte`, `lt`, `lte`, `between`
 - Full-text search across multiple fields
 - Multi-field sorting with ascending/descending support
 - Pagination with metadata (total, totalPages, hasNext, hasPrev)
+- Relation loading via `?include=` with ORM-specific adapters
 - Dialect-aware SQL generation (PostgreSQL `ILIKE`, `$N` placeholders, `NULLS LAST`; MySQL `LIKE`, `?` placeholders)
 - ORM adapters for **sqlx**, **GORM**, and **Bun**
 
@@ -34,11 +35,6 @@ go get github.com/anggasct/goquery/bunx
 ### Parsing URL Query Parameters
 
 ```go
-import (
-    "net/url"
-    "github.com/anggasct/goquery"
-)
-
 cfg := goquery.Config{
     AllowSearch:  []string{"name", "email"},
     AllowSort:    []string{"name", "createdAt"},
@@ -53,80 +49,140 @@ cfg := goquery.Config{
     DefaultSort:  "created_at DESC",
 }
 
-// Example: ?page=2&limit=10&q=john&sort=-createdAt&filter[status][in]=active,pending
+// Example: ?page=2&limit=10&q=john&sort=-createdAt&filter[status][in]=active,pending&include=profile
 spec, err := goquery.Parse(r.URL.Query(), cfg)
-if err != nil {
-    // handle validation error
-}
 ```
 
 ### With sqlx
 
+#### Basic pagination
+
 ```go
-import (
-    "github.com/anggasct/goquery/sqlxx"
-)
+result, err := sqlxx.Paginate[User](ctx, db, spec, "users", sqlxx.Options{
+    FieldToCol: map[string]string{"createdAt": "created_at"},
+})
+// result.Items = []User
+// result.Meta  = goquery.PageMeta{Page, Limit, Total, TotalPages, HasNext, HasPrev}
+```
 
-opts := sqlxx.Options{
-    FieldToCol: map[string]string{
-        "createdAt": "created_at",
+#### Scope, FilterScope, and Select
+
+```go
+result, err := sqlxx.Paginate[Article](ctx, db, spec, "article a", sqlxx.Options{
+    Select: "a.*",
+    Scope: func(w *sqlxx.WhereBuilder) {
+        w.Add("a.deleted_at IS NULL")
     },
-}
+    FilterScope: map[string]sqlxx.FilterFunc{
+        "tag": func(w *sqlxx.WhereBuilder, f goquery.Filter) {
+            w.Add(`EXISTS (
+                SELECT 1 FROM article_tag at
+                JOIN tag t ON t.id = at.tag_id
+                WHERE at.article_id = a.id AND t.slug = ?
+            )`, f.Values[0])
+        },
+    },
+    FieldToCol: map[string]string{
+        "createdAt": "a.created_at",
+        "status":    "a.status",
+    },
+})
+```
 
-// Option 1: Build clauses manually (requires Dialect to be set explicitly)
-opts.Dialect = goquery.DialectPtr(goquery.Postgres)
+#### Relation loading with PaginateWith
+
+Use `PaginateWith` to batch-load relations based on `?include=` parameters, eliminating N+1 queries:
+
+```go
+result, err := sqlxx.PaginateWith[Article](ctx, db, spec, "article a",
+    sqlxx.Options{
+        Select: "a.*",
+        Scope:  func(w *sqlxx.WhereBuilder) { w.Add("a.deleted_at IS NULL") },
+    },
+    map[string]sqlxx.IncludeFunc[Article]{
+        "category": sqlxx.BelongsTo[Article, Category](
+            "category", "category_id", "Category", "deleted_at IS NULL",
+        ),
+        "author": sqlxx.BelongsTo[Article, User](
+            `"user"`, "author_id", "Author", "deleted_at IS NULL",
+        ),
+        "tags": sqlxx.HasMany[Article, Tag](
+            "tag", "article_tag", "article_id", "tag_id", "Tags", "deleted_at IS NULL",
+        ),
+    },
+)
+```
+
+**`BelongsTo[T, R](table, fkCol, field, conds...)`** — batch-loads a belongs-to relation:
+- `table`: related table name
+- `fkCol`: `db` tag of the FK field in T (handles nullable pointers)
+- `field`: struct field name in T to assign the `*R` result
+- `conds`: optional WHERE conditions
+
+**`HasMany[T, R](relTable, joinTable, fkCol, relCol, field, conds...)`** — batch-loads a many-to-many relation via a join table:
+- `relTable`: related table name
+- `joinTable`: join table name
+- `fkCol`: column in join table pointing to T
+- `relCol`: column in join table pointing to R
+- `field`: struct field name in T to assign the `[]R` result
+- `conds`: optional WHERE conditions for the related table
+
+Both use conventions: primary keys are resolved via the `db:"id"` struct tag, and fields are assigned by struct field name.
+
+For custom include logic, implement `IncludeFunc[T]` directly:
+
+```go
+type IncludeFunc[T any] func(ctx context.Context, db *sqlx.DB, items []T) error
+```
+
+#### Build clauses manually
+
+```go
+opts := sqlxx.Options{
+    Dialect:    goquery.DialectPtr(goquery.Postgres),
+    FieldToCol: map[string]string{"createdAt": "created_at"},
+}
 clauses := sqlxx.Build(spec, opts)
 fullSQL := sqlxx.BuildFullQuery("SELECT * FROM users", clauses)
 // Execute with clauses.Args...
-
-// Option 2: Paginate directly (dialect auto-detected from db connection)
-result, err := sqlxx.Paginate[User](
-    ctx, db, spec,
-    "SELECT * FROM users",
-    "SELECT COUNT(*) FROM users",
-    sqlxx.Options{
-        FieldToCol: map[string]string{"createdAt": "created_at"},
-    },
-)
-// result.Items = []User
-// result.Meta  = goquery.PageMeta{Page, Limit, Total, TotalPages, HasNext, HasPrev}
 ```
 
 ### With GORM
 
 ```go
-import (
-    "github.com/anggasct/goquery/gormx"
-)
-
-// Dialect is auto-detected from the GORM db connection
 opts := gormx.Options{
-    FieldToCol: map[string]string{
-        "createdAt": "created_at",
+    FieldToCol: map[string]string{"createdAt": "created_at"},
+    IncludeMap: map[string]func(*gorm.DB) *gorm.DB{
+        "profile": func(db *gorm.DB) *gorm.DB {
+            return db.Preload("Profile", "active = true")
+        },
     },
 }
-
 result, err := gormx.Paginate[User](db.Model(&User{}), spec, opts)
 ```
+
+Includes without a custom handler auto-map to `db.Preload(PascalCase(name))`.
 
 ### With Bun
 
 ```go
-import (
-    "github.com/anggasct/goquery/bunx"
-)
-
-// Dialect is auto-detected from the Bun db connection
 opts := bunx.Options{
-    FieldToCol: map[string]string{
-        "createdAt": "created_at",
+    FieldToCol: map[string]string{"createdAt": "created_at"},
+    Scope: func(q *bun.SelectQuery) *bun.SelectQuery {
+        return q.Where("deleted_at IS NULL")
+    },
+    IncludeMap: map[string]func(*bun.SelectQuery) *bun.SelectQuery{
+        "profile": func(q *bun.SelectQuery) *bun.SelectQuery {
+            return q.Relation("Profile", func(q *bun.SelectQuery) *bun.SelectQuery {
+                return q.Where("active = true")
+            })
+        },
     },
 }
-
-result, err := bunx.Paginate[User](ctx, db, func(q *bun.SelectQuery) *bun.SelectQuery {
-    return q.Where("deleted_at IS NULL")
-}, spec, opts)
+result, err := bunx.Paginate[User](ctx, db, spec, opts)
 ```
+
+Includes without a custom handler auto-map to `q.Relation(PascalCase(name))`.
 
 ### Programmatic Filters
 
@@ -146,6 +202,7 @@ spec := goquery.Spec{
     Sort: []goquery.SortField{
         {Field: "createdAt", Desc: true},
     },
+    Includes: []string{"profile", "orders"},
 }
 ```
 
