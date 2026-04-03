@@ -3,7 +3,7 @@ module github.com/anggasct/goquery/gormx
 go 1.25.0
 
 require (
-	github.com/anggasct/goquery v0.1.0
+	github.com/anggasct/goquery v0.2.0
 	gorm.io/gorm v1.31.1
 )
 

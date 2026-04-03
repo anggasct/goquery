@@ -158,29 +158,14 @@ func setDefaults(cfg *Config) {
 }
 
 func validateKnownKeys(values url.Values, cfg Config) error {
-	knownBasics := map[string]bool{
-		"page":    true,
-		"limit":   true,
-		"q":       true,
-		"sort":    true,
-		"include": true,
-		"fields":  true,
-	}
-	for field := range cfg.AllowFilter {
-		knownBasics[field] = true
-	}
-
 	for key := range values {
-		if knownBasics[key] {
-			continue
-		}
-		if fieldsKeyPattern.MatchString(key) {
-			continue
-		}
 		if filterKeyPattern.MatchString(key) {
-			continue
+			matches := filterKeyPattern.FindStringSubmatch(key)
+			field := strings.TrimSpace(matches[1])
+			if _, ok := cfg.AllowFilter[field]; !ok {
+				return fmt.Errorf("filter field is not allowed: %s", field)
+			}
 		}
-		return fmt.Errorf("unknown query parameter: %s", key)
 	}
 	return nil
 }

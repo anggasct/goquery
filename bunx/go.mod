@@ -3,7 +3,7 @@ module github.com/anggasct/goquery/bunx
 go 1.25.0
 
 require (
-	github.com/anggasct/goquery v0.1.0
+	github.com/anggasct/goquery v0.2.0
 	github.com/uptrace/bun v1.2.18
 	github.com/uptrace/bun/dialect/sqlitedialect v1.2.18
 	github.com/uptrace/bun/driver/sqliteshim v1.2.18

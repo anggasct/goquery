@@ -11,7 +11,9 @@ import (
 type Options struct {
 	FieldToCol  map[string]string
 	DefaultSort string
-	Dialect     *goquery.Dialect // nil = auto-detect from db connection
+	Dialect     *goquery.Dialect                       // nil = auto-detect from db connection
+	Scope       func(db *gorm.DB) *gorm.DB             // custom query modifications (JOINs, WHERE, etc.)
+	IncludeMap  map[string]func(*gorm.DB) *gorm.DB     // custom include handlers (overrides auto PascalCase)
 }
 
 func resolveColumn(field string, fieldToColumn map[string]string) string {
@@ -31,6 +33,24 @@ func likeOp(dialect goquery.Dialect) string {
 		return "LIKE"
 	}
 	return "ILIKE"
+}
+
+func ApplyScope(db *gorm.DB, opts Options) *gorm.DB {
+	if opts.Scope != nil {
+		db = opts.Scope(db)
+	}
+	return db
+}
+
+func ApplyInclude(db *gorm.DB, spec goquery.Spec, opts Options) *gorm.DB {
+	for _, inc := range spec.Includes {
+		if fn, ok := opts.IncludeMap[inc]; ok {
+			db = fn(db)
+		} else {
+			db = db.Preload(goquery.ToPascalCase(inc))
+		}
+	}
+	return db
 }
 
 func ApplySearch(db *gorm.DB, spec goquery.Spec, opts Options) *gorm.DB {
@@ -123,11 +143,14 @@ func ApplyPage(db *gorm.DB, spec goquery.Spec) *gorm.DB {
 
 func Paginate[T any](db *gorm.DB, spec goquery.Spec, opts Options) (goquery.PageResult[T], error) {
 	var items []T
+	sortOpts := Options{FieldToCol: opts.FieldToCol, DefaultSort: spec.DefaultSort, Dialect: opts.Dialect}
 
 	if spec.Page <= 0 || spec.Limit == -1 {
-		q := ApplySearch(db, spec, opts)
+		q := ApplyScope(db, opts)
+		q = ApplyInclude(q, spec, opts)
+		q = ApplySearch(q, spec, opts)
 		q = ApplyFilters(q, spec, opts)
-		q = ApplySort(q, spec, Options{FieldToCol: opts.FieldToCol, DefaultSort: spec.DefaultSort, Dialect: opts.Dialect})
+		q = ApplySort(q, spec, sortOpts)
 		if spec.Limit > 0 {
 			q = q.Limit(spec.Limit)
 		}
@@ -142,15 +165,18 @@ func Paginate[T any](db *gorm.DB, spec goquery.Spec, opts Options) (goquery.Page
 	}
 
 	var total int64
-	countQ := ApplySearch(db.Session(&gorm.Session{}), spec, opts)
+	countQ := ApplyScope(db.Session(&gorm.Session{}), opts)
+	countQ = ApplySearch(countQ, spec, opts)
 	countQ = ApplyFilters(countQ, spec, opts)
 	if err := countQ.Count(&total).Error; err != nil {
 		return goquery.PageResult[T]{}, err
 	}
 
-	dataQ := ApplySearch(db.Session(&gorm.Session{}), spec, opts)
+	dataQ := ApplyScope(db.Session(&gorm.Session{}), opts)
+	dataQ = ApplyInclude(dataQ, spec, opts)
+	dataQ = ApplySearch(dataQ, spec, opts)
 	dataQ = ApplyFilters(dataQ, spec, opts)
-	dataQ = ApplySort(dataQ, spec, Options{FieldToCol: opts.FieldToCol, DefaultSort: spec.DefaultSort, Dialect: opts.Dialect})
+	dataQ = ApplySort(dataQ, spec, sortOpts)
 	dataQ = ApplyPage(dataQ, spec)
 	if err := dataQ.Find(&items).Error; err != nil {
 		return goquery.PageResult[T]{}, err

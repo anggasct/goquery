@@ -55,11 +55,19 @@ func TestParseValidQuery(t *testing.T) {
 	}
 }
 
-func TestParseRejectsUnknownQueryParam(t *testing.T) {
-	values, _ := url.ParseQuery("unknown=x")
+func TestParseIgnoresUnknownQueryParam(t *testing.T) {
+	values, _ := url.ParseQuery("unknown=x&page=1&limit=10")
+	_, err := Parse(values, baseConfig())
+	if err != nil {
+		t.Fatalf("expected no error for unknown query key, got %v", err)
+	}
+}
+
+func TestParseRejectsUnknownFilterField(t *testing.T) {
+	values, _ := url.ParseQuery("filter[unknown][eq]=x")
 	_, err := Parse(values, baseConfig())
 	if err == nil {
-		t.Fatal("expected error for unknown query key")
+		t.Fatal("expected error for unknown filter field")
 	}
 }
 

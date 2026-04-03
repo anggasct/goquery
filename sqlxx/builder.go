@@ -9,12 +9,17 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+// FilterFunc generates a custom WHERE condition for a filter field.
+// Use this for filters that need subqueries or non-standard SQL.
+type FilterFunc func(w *WhereBuilder, f goquery.Filter)
+
 type Options struct {
 	FieldToCol  map[string]string
 	DefaultSort string
-	Dialect     *goquery.Dialect // nil = auto-detect from db connection
-	ExtraWhere  []string         // additional WHERE conditions prepended before goquery filters
-	ExtraArgs   []any            // args for ExtraWhere placeholders
+	Dialect     *goquery.Dialect          // nil = auto-detect from db connection
+	Scope       func(w *WhereBuilder)     // dynamic WHERE conditions with ? placeholders
+	Select      string                    // columns to select (default: "*")
+	FilterScope map[string]FilterFunc     // custom SQL handlers for specific filter fields
 }
 
 type Clauses struct {
@@ -45,14 +50,39 @@ func Build(spec goquery.Spec, opts Options) Clauses {
 	var whereParts []string
 	var allArgs []any
 
-	// Prepend extra WHERE conditions
-	if len(opts.ExtraWhere) > 0 {
-		whereParts = append(whereParts, opts.ExtraWhere...)
-		allArgs = append(allArgs, opts.ExtraArgs...)
+	// Apply scope (dynamic WHERE conditions)
+	if opts.Scope != nil {
+		wb := &WhereBuilder{}
+		opts.Scope(wb)
+		if !wb.IsEmpty() {
+			parts, args := wb.resolve(dialect, len(allArgs))
+			whereParts = append(whereParts, parts...)
+			allArgs = append(allArgs, args...)
+		}
 	}
 
-	// Goquery clauses (search + filters) with arg offset
-	where := b.WhereClauses(spec, len(allArgs))
+	// Separate custom-scoped filters from default filters
+	specForClauses := spec
+	if len(opts.FilterScope) > 0 {
+		wb := &WhereBuilder{}
+		var defaultFilters []goquery.Filter
+		for _, f := range spec.Filters {
+			if fn, ok := opts.FilterScope[f.Field]; ok {
+				fn(wb, f)
+			} else {
+				defaultFilters = append(defaultFilters, f)
+			}
+		}
+		if !wb.IsEmpty() {
+			parts, args := wb.resolve(dialect, len(allArgs))
+			whereParts = append(whereParts, parts...)
+			allArgs = append(allArgs, args...)
+		}
+		specForClauses.Filters = defaultFilters
+	}
+
+	// Goquery clauses (search + default filters) with arg offset
+	where := b.WhereClauses(specForClauses, len(allArgs))
 	if where.SQL != "" {
 		whereParts = append(whereParts, where.SQL)
 		allArgs = append(allArgs, where.Args...)
@@ -79,8 +109,7 @@ func Paginate[T any](
 	ctx context.Context,
 	db *sqlx.DB,
 	spec goquery.Spec,
-	baseQuery string,
-	countQuery string,
+	from string,
 	opts Options,
 ) (goquery.PageResult[T], error) {
 	// Auto-detect dialect from db if not explicitly set
@@ -89,6 +118,13 @@ func Paginate[T any](
 		opts.Dialect = &d
 	}
 	c := Build(spec, opts)
+
+	sel := opts.Select
+	if sel == "" {
+		sel = "*"
+	}
+	baseQuery := "SELECT " + sel + " FROM " + from
+	countQuery := "SELECT COUNT(*) FROM " + from
 
 	if spec.Page <= 0 || spec.Limit == -1 {
 		dataSQL := baseQuery

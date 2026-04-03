@@ -12,7 +12,9 @@ import (
 type Options struct {
 	FieldToCol  map[string]string
 	DefaultSort string
-	Dialect     *goquery.Dialect // nil = auto-detect from db connection
+	Dialect     *goquery.Dialect                                          // nil = auto-detect from db connection
+	Scope       func(q *bun.SelectQuery) *bun.SelectQuery                // custom query modifications (JOINs, WHERE, etc.)
+	IncludeMap  map[string]func(*bun.SelectQuery) *bun.SelectQuery       // custom include handlers (overrides auto PascalCase)
 }
 
 func resolveColumn(field string, fieldToColumn map[string]string) string {
@@ -36,6 +38,24 @@ func likeOp(dialect goquery.Dialect) string {
 		return "LIKE"
 	}
 	return "ILIKE"
+}
+
+func ApplyScope(q *bun.SelectQuery, opts Options) *bun.SelectQuery {
+	if opts.Scope != nil {
+		q = opts.Scope(q)
+	}
+	return q
+}
+
+func ApplyInclude(q *bun.SelectQuery, spec goquery.Spec, opts Options) *bun.SelectQuery {
+	for _, inc := range spec.Includes {
+		if fn, ok := opts.IncludeMap[inc]; ok {
+			q = fn(q)
+		} else {
+			q = q.Relation(goquery.ToPascalCase(inc))
+		}
+	}
+	return q
 }
 
 func ApplySearch(q *bun.SelectQuery, spec goquery.Spec, opts Options) *bun.SelectQuery {
@@ -129,7 +149,6 @@ func ApplyPage(q *bun.SelectQuery, spec goquery.Spec) *bun.SelectQuery {
 func Paginate[T any](
 	ctx context.Context,
 	db *bun.DB,
-	baseQuery func(q *bun.SelectQuery) *bun.SelectQuery,
 	spec goquery.Spec,
 	opts Options,
 ) (goquery.PageResult[T], error) {
@@ -145,7 +164,8 @@ func Paginate[T any](
 
 	if spec.Page <= 0 || spec.Limit == -1 {
 		q := db.NewSelect().Model(&items)
-		q = baseQuery(q)
+		q = ApplyScope(q, opts)
+		q = ApplyInclude(q, spec, opts)
 		q = ApplySearch(q, spec, opts)
 		q = ApplyFilters(q, spec, opts)
 		q = ApplySort(q, spec, sortOpts)
@@ -163,7 +183,7 @@ func Paginate[T any](
 	}
 
 	countQ := db.NewSelect().Model((*T)(nil))
-	countQ = baseQuery(countQ)
+	countQ = ApplyScope(countQ, opts)
 	countQ = ApplySearch(countQ, spec, opts)
 	countQ = ApplyFilters(countQ, spec, opts)
 	total, err := countQ.Count(ctx)
@@ -172,7 +192,8 @@ func Paginate[T any](
 	}
 
 	dataQ := db.NewSelect().Model(&items)
-	dataQ = baseQuery(dataQ)
+	dataQ = ApplyScope(dataQ, opts)
+	dataQ = ApplyInclude(dataQ, spec, opts)
 	dataQ = ApplySearch(dataQ, spec, opts)
 	dataQ = ApplyFilters(dataQ, spec, opts)
 	dataQ = ApplySort(dataQ, spec, sortOpts)

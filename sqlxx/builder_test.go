@@ -142,3 +142,98 @@ func TestBuildFullQueryNoWhere(t *testing.T) {
 		t.Fatalf("unexpected SQL:\ngot:  %s\nwant: %s", sql, expected)
 	}
 }
+
+func TestBuildWithFilterScope(t *testing.T) {
+	spec := goquery.Spec{
+		Page:  1,
+		Limit: 10,
+		Filters: []goquery.Filter{
+			{Field: "tag", Operator: "eq", Values: []any{"golang"}},
+		},
+	}
+
+	opts := Options{
+		Dialect: goquery.DialectPtr(goquery.Postgres),
+		Scope: func(w *WhereBuilder) {
+			w.Add("deleted_at IS NULL")
+		},
+		FilterScope: map[string]FilterFunc{
+			"tag": func(w *WhereBuilder, f goquery.Filter) {
+				w.Add(`EXISTS (SELECT 1 FROM tag t WHERE t.slug = ?)`, f.Values[0])
+			},
+		},
+	}
+
+	c := Build(spec, opts)
+
+	if len(c.Args) != 1 {
+		t.Fatalf("expected 1 arg, got %d: %v", len(c.Args), c.Args)
+	}
+	if c.Args[0] != "golang" {
+		t.Fatalf("expected arg 'golang', got %v", c.Args[0])
+	}
+	if c.Where == "" {
+		t.Fatal("expected non-empty WHERE")
+	}
+}
+
+func TestBuildWithFilterScopeMixed(t *testing.T) {
+	spec := goquery.Spec{
+		Page:  1,
+		Limit: 10,
+		Filters: []goquery.Filter{
+			{Field: "tag", Operator: "eq", Values: []any{"golang"}},
+			{Field: "status", Operator: "eq", Values: []any{"published"}},
+		},
+	}
+
+	opts := Options{
+		FieldToCol: map[string]string{"status": "a.status"},
+		Dialect:    goquery.DialectPtr(goquery.Postgres),
+		Scope: func(w *WhereBuilder) {
+			w.Add("a.deleted_at IS NULL")
+		},
+		FilterScope: map[string]FilterFunc{
+			"tag": func(w *WhereBuilder, f goquery.Filter) {
+				w.Add(`EXISTS (SELECT 1 FROM tag t WHERE t.slug = ?)`, f.Values[0])
+			},
+		},
+	}
+
+	c := Build(spec, opts)
+
+	// Args: "golang" from FilterScope, "published" from default filter
+	if len(c.Args) != 2 {
+		t.Fatalf("expected 2 args, got %d: %v", len(c.Args), c.Args)
+	}
+	if c.Args[0] != "golang" {
+		t.Fatalf("expected first arg 'golang', got %v", c.Args[0])
+	}
+	if c.Args[1] != "published" {
+		t.Fatalf("expected second arg 'published', got %v", c.Args[1])
+	}
+}
+
+func TestBuildWithFilterScopeNil(t *testing.T) {
+	spec := goquery.Spec{
+		Page:  1,
+		Limit: 10,
+		Filters: []goquery.Filter{
+			{Field: "status", Operator: "eq", Values: []any{"active"}},
+		},
+	}
+
+	opts := Options{
+		FieldToCol: map[string]string{"status": "u.status"},
+		Dialect:    goquery.DialectPtr(goquery.Postgres),
+	}
+
+	c := Build(spec, opts)
+
+	if len(c.Args) != 1 || c.Args[0] != "active" {
+		t.Fatalf("expected args ['active'], got %v", c.Args)
+	}
+	if c.Where == "" {
+		t.Fatal("expected non-empty WHERE")
+	}
+}
