@@ -75,7 +75,24 @@ func TestBuildNoFilters(t *testing.T) {
 	}
 }
 
-func TestBuildWithDefaultSort(t *testing.T) {
+func TestBuildWithDefaultSortFromSpec(t *testing.T) {
+	spec := goquery.Spec{
+		Page:        1,
+		Limit:       10,
+		DefaultSort: "created_at DESC",
+	}
+	opts := Options{
+		Dialect:     goquery.DialectPtr(goquery.Postgres),
+		DefaultSort: "created_at ASC",
+	}
+
+	c := Build(spec, opts)
+	if c.OrderBy != "created_at DESC" {
+		t.Fatalf("expected spec default sort, got %s", c.OrderBy)
+	}
+}
+
+func TestBuildWithDefaultSortFallbackToOptions(t *testing.T) {
 	spec := goquery.Spec{Page: 1, Limit: 10}
 	opts := Options{
 		Dialect:     goquery.DialectPtr(goquery.Postgres),
@@ -84,7 +101,27 @@ func TestBuildWithDefaultSort(t *testing.T) {
 
 	c := Build(spec, opts)
 	if c.OrderBy != "created_at DESC" {
-		t.Fatalf("expected default sort, got %s", c.OrderBy)
+		t.Fatalf("expected options default sort fallback, got %s", c.OrderBy)
+	}
+}
+
+func TestBuildWithExplicitSortOverridesDefaults(t *testing.T) {
+	spec := goquery.Spec{
+		Page:        1,
+		Limit:       10,
+		DefaultSort: "created_at DESC",
+		Sort: []goquery.SortField{
+			{Field: "name", Desc: false},
+		},
+	}
+	opts := Options{
+		Dialect:     goquery.DialectPtr(goquery.MySQL),
+		DefaultSort: "created_at ASC",
+	}
+
+	c := Build(spec, opts)
+	if c.OrderBy != "name ASC" {
+		t.Fatalf("expected explicit sort to override defaults, got %s", c.OrderBy)
 	}
 }
 

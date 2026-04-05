@@ -93,7 +93,12 @@ func Build(spec goquery.Spec, opts Options) Clauses {
 		whereSQL = strings.Join(whereParts, " AND ")
 	}
 
-	orderBy := b.SortSQL(spec, opts.DefaultSort)
+	defaultSort := strings.TrimSpace(spec.DefaultSort)
+	if defaultSort == "" {
+		defaultSort = opts.DefaultSort
+	}
+
+	orderBy := b.SortSQL(spec, defaultSort)
 	limit, offset := b.PageLimitOffset(spec)
 
 	return Clauses{

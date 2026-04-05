@@ -65,6 +65,11 @@ result, err := sqlxx.Paginate[User](ctx, db, spec, "users", sqlxx.Options{
 // result.Meta  = goquery.PageMeta{Page, Limit, Total, TotalPages, HasNext, HasPrev}
 ```
 
+Default sort precedence for `sqlxx`:
+- If `spec.Sort` is present, explicit sort from query/programmatic spec is used.
+- If `spec.Sort` is empty, `spec.DefaultSort` is used first (for example from `goquery.Parse` + `Config.DefaultSort`).
+- If both are empty, `sqlxx.Options.DefaultSort` is used as fallback.
+
 #### Scope, FilterScope, and Select
 
 ```go
